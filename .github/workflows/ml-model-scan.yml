@@ -1,0 +1,188 @@
+# GitHub Actions workflow for scanning ML models in pull requests
+# Add this to your repository's .github/workflows/ directory
+
+name: ML Model Security Scan
+
+on:
+  pull_request:
+    paths:
+      - '**.pkl'
+      - '**.pickle'
+      - '**.pth'
+      - '**.pt'
+      - '**.h5'
+      - '**.hdf5'
+      - '**.keras'
+      - '**.onnx'
+      - '**.pb'
+      - '**.tflite'
+      - '**.safetensors'
+      - '**.gguf'
+      - '**.bin'
+      - '**.npz'
+
+  push:
+    paths:
+      - 'models/**'
+      - '**.pkl'
+      - '**.pth'
+
+  workflow_dispatch:
+    inputs:
+      model_path:
+        description: 'Path to model file or directory to scan'
+        required: false
+        default: '.'
+
+jobs:
+  scan-models:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install ML Model Security Analyzer
+      run: |
+        pip install ml-model-security-analyzer
+
+    - name: Get changed files
+      id: changed-files
+      uses: tj-actions/changed-files@v44
+      with:
+        files: |
+          **.pkl
+          **.pickle
+          **.pth
+          **.pt
+          **.h5
+          **.hdf5
+          **.keras
+          **.onnx
+          **.pb
+          **.tflite
+          **.safetensors
+          **.gguf
+          **.bin
+          **.npz
+
+    - name: Scan changed model files
+      if: steps.changed-files.outputs.any_changed == 'true'
+      run: |
+        echo "Scanning changed model files..."
+        
+        # Create output directory
+        mkdir -p scan-results
+        
+        # Scan each changed file
+        for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
+          echo "Scanning: $file"
+          mlsec-analyzer scan "$file" \
+            --output "scan-results/$(basename $file).json" \
+            --format sarif \
+            --severity-threshold low \
+            -v || true
+        done
+
+    - name: Scan models directory (manual trigger)
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        SCAN_PATH="${{ github.event.inputs.model_path }}"
+        echo "Scanning: $SCAN_PATH"
+        
+        mlsec-analyzer scan "$SCAN_PATH" \
+          --output scan-results/manual-scan.sarif \
+          --format sarif \
+          --fail-on-critical
+
+    - name: Upload SARIF results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: scan-results/
+        category: ml-model-security
+
+    - name: Upload scan artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: model-security-scan-results
+        path: scan-results/
+
+    - name: Comment on PR with results
+      if: github.event_name == 'pull_request' && steps.changed-files.outputs.any_changed == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          
+          let comment = '## ML Model Security Scan Results\n\n';
+          
+          const resultsDir = 'scan-results';
+          if (fs.existsSync(resultsDir)) {
+            const files = fs.readdirSync(resultsDir);
+            
+            for (const file of files) {
+              if (file.endsWith('.json') || file.endsWith('.sarif')) {
+                const content = JSON.parse(fs.readFileSync(path.join(resultsDir, file)));
+                
+                if (content.runs) {
+                  // SARIF format
+                  const results = content.runs[0]?.results || [];
+                  const errors = results.filter(r => r.level === 'error').length;
+                  const warnings = results.filter(r => r.level === 'warning').length;
+                  
+                  comment += `### ${file}\n`;
+                  comment += `- Critical/High: ${errors}\n`;
+                  comment += `- Medium/Low: ${warnings}\n\n`;
+                } else if (content.summary) {
+                  // JSON format
+                  comment += `### ${file}\n`;
+                  comment += `- Critical: ${content.summary.critical || 0}\n`;
+                  comment += `- High: ${content.summary.high || 0}\n`;
+                  comment += `- Medium: ${content.summary.medium || 0}\n`;
+                  comment += `- Low: ${content.summary.low || 0}\n\n`;
+                }
+              }
+            }
+          }
+          
+          comment += '\n---\n*Scanned by ML Model Security Analyzer*';
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+    - name: Check for critical vulnerabilities
+      if: steps.changed-files.outputs.any_changed == 'true'
+      run: |
+        # Check if any critical vulnerabilities were found
+        CRITICAL_COUNT=0
+        
+        for file in scan-results/*.json scan-results/*.sarif; do
+          if [ -f "$file" ]; then
+            if grep -q '"level": "error"' "$file" || grep -q '"critical": [1-9]' "$file"; then
+              CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
+            fi
+          fi
+        done
+        
+        if [ $CRITICAL_COUNT -gt 0 ]; then
+          echo "::error::Found critical vulnerabilities in $CRITICAL_COUNT model file(s)"
+          exit 1
+        fi
+        
+        echo "No critical vulnerabilities found"

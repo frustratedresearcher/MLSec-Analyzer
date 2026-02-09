@@ -1,0 +1,162 @@
+# ML Model Security Analyzer Configuration
+# Copy this file and customize for your project
+
+version: "1.0.0"
+
+# Scanner configurations
+scanners:
+  pickle_scanner:
+    enabled: true
+    check_reduce: true
+    check_global: true
+    # Additional allowed imports (extend default safe list)
+    allowed_imports:
+      - collections
+      - datetime
+      - numpy
+      - torch._utils
+    # Additional dangerous imports to flag
+    dangerous_imports:
+      - os
+      - subprocess
+      - builtins
+      - pickle
+      - marshal
+
+  graph_injection_scanner:
+    enabled: true
+    # TensorFlow ops to flag as dangerous
+    dangerous_ops:
+      - PyFunc
+      - PyFuncStateless
+      - EagerPyFunc
+      - ReadFile
+      - WriteFile
+
+  metadata_scanner:
+    enabled: true
+    max_string_length: 10000
+    check_format_strings: true
+    check_embedded_scripts: true
+
+  lambda_layer_scanner:
+    enabled: true
+    decompile_bytecode: true
+    # Patterns to detect in Lambda layer code
+    dangerous_patterns:
+      - "os.system"
+      - "subprocess"
+      - "eval("
+      - "exec("
+      - "__import__"
+      - "requests."
+      - "socket."
+
+  dependency_scanner:
+    enabled: true
+    check_typosquatting: true
+    check_custom_repos: true
+
+  gguf_scanner:
+    enabled: true
+    check_integer_overflow: true
+    check_buffer_bounds: true
+    max_tensor_count: 10000
+
+  polyglot_scanner:
+    enabled: true
+    check_magic_bytes: true
+    check_embedded_formats: true
+
+  backdoor_scanner:
+    enabled: true
+    # Analysis depth: "final_layer" or "all_layers"
+    weight_analysis_depth: "final_layer"
+    # Z-score threshold for outlier detection
+    outlier_threshold: 3.0
+    # Entropy threshold for pattern detection
+    entropy_threshold: 0.5
+
+  zip_slip_scanner:
+    enabled: true
+    check_symlinks: true
+    check_absolute_paths: true
+
+  external_ref_scanner:
+    enabled: true
+    # Domains to allow (won't flag these)
+    allowed_domains:
+      - huggingface.co
+      - github.com
+      - pytorch.org
+      - tensorflow.org
+    check_ssrf_patterns: true
+
+# Severity settings
+severity:
+  # Minimum severity to include in report
+  threshold: "low"
+  # Exit with code 1 if critical vulnerabilities found
+  fail_on_critical: true
+  # CVSS score to severity level mapping
+  cvss_mapping:
+    critical:
+      min: 9.0
+      max: 10.0
+    high:
+      min: 7.0
+      max: 8.9
+    medium:
+      min: 4.0
+      max: 6.9
+    low:
+      min: 0.0
+      max: 3.9
+
+# File extraction settings
+extraction:
+  # Maximum file size to scan (in MB)
+  max_file_size_mb: 500
+  # Timeout for extraction operations (seconds)
+  timeout_seconds: 300
+  # Use system temp directory if null
+  temp_dir: null
+  # Clean up temporary files after scanning
+  cleanup_on_exit: true
+
+# Output settings
+output:
+  format: "json"
+  include_evidence: true
+  include_recommendations: true
+  include_references: true
+
+# PoC generation settings
+poc:
+  enabled: false
+  output_dir: "./pocs"
+  formats:
+    - python
+    - json
+  include_safety_warnings: true
+
+# Remote extraction settings
+remote:
+  huggingface:
+    enabled: true
+    # Environment variable containing HuggingFace token
+    token_env_var: "HF_TOKEN"
+
+  s3:
+    enabled: true
+    access_key_env_var: "AWS_ACCESS_KEY_ID"
+    secret_key_env_var: "AWS_SECRET_ACCESS_KEY"
+
+  gcs:
+    enabled: true
+    credentials_env_var: "GOOGLE_APPLICATION_CREDENTIALS"
+
+  http:
+    enabled: true
+    timeout_seconds: 60
+    max_retries: 3

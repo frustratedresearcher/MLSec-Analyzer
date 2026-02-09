@@ -1,0 +1,126 @@
+# GitLab CI/CD configuration for ML Model Security Scanning
+# Add this to your repository's .gitlab-ci.yml or include it
+
+stages:
+  - security-scan
+  - build
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
+  SCAN_OUTPUT_DIR: "security-reports"
+
+# Cache pip packages
+cache:
+  paths:
+    - .pip-cache/
+
+# Security scan job
+ml-model-security-scan:
+  stage: security-scan
+  image: python:3.11-slim
+  
+  before_script:
+    - pip install ml-model-security-analyzer
+    - mkdir -p $SCAN_OUTPUT_DIR
+  
+  script:
+    # Scan the models directory
+    - |
+      if [ -d "models" ]; then
+        echo "Scanning models directory..."
+        mlsec-analyzer scan models/ \
+          --output $SCAN_OUTPUT_DIR/report.json \
+          --format json \
+          --severity-threshold low \
+          --verbose
+      else
+        echo "No models directory found, scanning root..."
+        mlsec-analyzer scan . \
+          --output $SCAN_OUTPUT_DIR/report.json \
+          --format json \
+          --severity-threshold medium
+      fi
+    
+    # Generate SARIF report for GitLab SAST
+    - |
+      mlsec-analyzer scan . \
+        --output $SCAN_OUTPUT_DIR/gl-sast-report.json \
+        --format sarif \
+        --severity-threshold low || true
+  
+  artifacts:
+    paths:
+      - $SCAN_OUTPUT_DIR/
+    reports:
+      sast: $SCAN_OUTPUT_DIR/gl-sast-report.json
+    when: always
+    expire_in: 1 week
+  
+  rules:
+    # Run on merge requests
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Run on pushes to main/master
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"
+    # Run when model files change
+    - changes:
+        - "**/*.pkl"
+        - "**/*.pth"
+        - "**/*.pt"
+        - "**/*.h5"
+        - "**/*.keras"
+        - "**/*.onnx"
+        - "**/*.gguf"
+        - "models/**/*"
+
+# Optional: Fail pipeline on critical vulnerabilities
+security-gate:
+  stage: security-scan
+  needs: [ml-model-security-scan]
+  image: python:3.11-slim
+  
+  script:
+    - pip install jq || apt-get update && apt-get install -y jq
+    - |
+      CRITICAL_COUNT=$(jq '.summary.critical // 0' $SCAN_OUTPUT_DIR/report.json)
+      HIGH_COUNT=$(jq '.summary.high // 0' $SCAN_OUTPUT_DIR/report.json)
+      
+      echo "Critical vulnerabilities: $CRITICAL_COUNT"
+      echo "High vulnerabilities: $HIGH_COUNT"
+      
+      if [ "$CRITICAL_COUNT" -gt 0 ]; then
+        echo "FAILED: Critical vulnerabilities found!"
+        exit 1
+      fi
+      
+      echo "Security gate passed"
+  
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# Example: Scan HuggingFace models before deployment
+scan-huggingface-model:
+  stage: security-scan
+  image: python:3.11-slim
+  
+  variables:
+    HF_MODEL_ID: "bert-base-uncased"  # Replace with your model
+  
+  script:
+    - pip install ml-model-security-analyzer
+    - |
+      echo "Scanning HuggingFace model: $HF_MODEL_ID"
+      mlsec-analyzer scan --huggingface "$HF_MODEL_ID" \
+        --output huggingface-scan.json \
+        --fail-on-critical
+  
+  artifacts:
+    paths:
+      - huggingface-scan.json
+    when: always
+  
+  rules:
+    - if: $SCAN_HUGGINGFACE == "true"
+    - when: manual
+      allow_failure: true
